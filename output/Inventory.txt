@@ -1,0 +1,6 @@
+	cake : 70 : 10
+	biscuit : 10 : 20
+	milk : 50 : 40
+	water : 15 : 35
+	shoes : 700 : 3
+	tshirt : 450 : 35
