@@ -5,6 +5,8 @@
 #include <limits>
 #include <string>
 #include <algorithm> 
+#include <unordered_map>
+#include <vector>
 #include <cctype>    
 
 using namespace std;
@@ -20,9 +22,16 @@ public:
     string getItem() const { return Item; }
     int getRate() const { return Rate; }
     int getQuant() const { return Quantity; }
+    
+    // New methods to handle stock entirely in memory
+    void reduceQuant(int amount) { Quantity -= amount; }
+    void addQuant(int amount) { Quantity += amount; }
 };
 
-// Converts a string to all lowercase letters for easy comparison
+// Global Inventory Map - Replaces continuous disk reads
+unordered_map<string, Bill> inventory;
+
+// Converts a string to all lowercase letters for O(1) key lookups
 string toLowerCase(string str) {
     transform(str.begin(), str.end(), str.begin(), ::tolower);
     return str;
@@ -42,6 +51,44 @@ int getValidInt(const string& prompt) {
             return value;
         }
     }
+}
+
+// Loads inventory into RAM at startup O(N)
+void loadInventory() {
+    ifstream in("Inventory.txt");
+    if (!in.is_open()) return; // If file doesn't exist yet, just return
+
+    string line, itemName;
+    int itemRate, itemQuant;
+    char delimiter;
+
+    while (getline(in, line)) {
+        if (line.empty()) continue; 
+
+        stringstream ss(line);
+        ss >> ws;
+        getline(ss, itemName, ':');
+        
+        // Trim trailing spaces from item name
+        while (!itemName.empty() && isspace(itemName.back())) {
+            itemName.pop_back();
+        }
+
+        ss >> itemRate >> delimiter >> itemQuant;
+        
+        // Store in hash map with lowercase key
+        inventory[toLowerCase(itemName)] = Bill(itemName, itemRate, itemQuant);
+    }
+    in.close();
+}
+
+// Saves RAM state back to disk O(N)
+void saveInventory() {
+    ofstream out("Inventory.txt", ios::trunc); // Overwrite existing file
+    for (const auto& pair : inventory) {
+        out << "\t" << pair.second.getItem() << " : " << pair.second.getRate() << " : " << pair.second.getQuant() << endl;
+    }
+    out.close();
 }
 
 void addItem() {
@@ -64,16 +111,18 @@ void addItem() {
             rate = getValidInt("\tEnter Rate Of Item: ");
             quant = getValidInt("\tEnter Quantity To Add: ");
 
-            Bill b(item, rate, quant);
-
-            ofstream out("Inventory.txt", ios::app);
-            if (!out.is_open()) {
-                cout << "\tError: Can't open Inventory file!" << endl;
+            string key = toLowerCase(item);
+            
+            // O(1) Check: Does item already exist?
+            if (inventory.find(key) != inventory.end()) {
+                inventory[key].addQuant(quant); // Add to existing stock
             } else {
-                out << "\t" << b.getItem() << " : " << b.getRate() << " : " << b.getQuant() << endl;
-                cout << "\tSuccess! '" << b.getItem() << "' added to master inventory." << endl;
+                inventory[key] = Bill(item, rate, quant); // Create new stock
             }
-            out.close();
+
+            saveInventory(); // Sync changes to disk
+
+            cout << "\tSuccess! '" << item << "' added/updated in master inventory." << endl;
             Sleep(2000);
             system("cls");
             
@@ -93,8 +142,8 @@ void printBill() {
     int totalAmount = 0;
     bool close = false;
     
-    // Ensure we start with a fresh cart for a new customer
-    remove("Receipt.txt"); 
+    // In-Memory Shopping Cart - Replaces Receipt.txt
+    vector<string> cartReceipt; 
 
     while (!close) {
         cout << "\n\t--- SHOPPING CART ---" << endl;
@@ -108,73 +157,35 @@ void printBill() {
             cout << "\tEnter Item Name to Buy: ";
             getline(cin >> ws, searchItem);
             
-            ifstream in("Inventory.txt");
-            if (!in.is_open()) {
-                cout << "\tError: Inventory empty! Please add items first." << endl;
-                Sleep(2000);
-                system("cls");
-                continue;
-            }
-
-            ofstream out("Inventory_Temp.txt");
-            ofstream receipt("Receipt.txt", ios::app); 
-
-            string line;
-            bool found = false;
-
-            while (getline(in, line)) {
-                if (line.empty()) continue; 
-
-                stringstream ss(line);
-                string itemName;
-                int itemRate, itemQuant;
-                char delimiter;
+            string key = toLowerCase(searchItem);
+            
+            // O(1) Fast Lookup in Hash Map
+            if (inventory.find(key) != inventory.end()) {
+                int available = inventory[key].getQuant();
                 
-                ss >> ws;
-                getline(ss, itemName, ':');
-                
-                while (!itemName.empty() && isspace(itemName.back())) {
-                    itemName.pop_back();
-                }
-
-                ss >> itemRate >> delimiter >> itemQuant;
-
-                if (toLowerCase(searchItem) == toLowerCase(itemName)) {
-                    found = true;
-                    
-                    // Display available stock and ask for quantity ONLY if item is found
-                    cout << "\n\t-> Item Found! Available Stock: " << itemQuant << endl;
+                if (available == 0) {
+                    cout << "\n\t[ERROR] '" << inventory[key].getItem() << "' is currently out of stock!" << endl;
+                } else {
+                    cout << "\n\t-> Item Found! Available Stock: " << available << endl;
                     int buyQuant = getValidInt("\t-> Enter Quantity to Buy: ");
 
-                    if (buyQuant <= itemQuant) {
-                        int amount = itemRate * buyQuant;
+                    if (buyQuant <= available) {
+                        int amount = inventory[key].getRate() * buyQuant;
                         
-                        cout << "\t[ADDED TO CART] " << buyQuant << "x " << itemName << " - $" << amount << endl;
+                        cout << "\t[ADDED TO CART] " << buyQuant << "x " << inventory[key].getItem() << " - $" << amount << endl;
                         
-                        itemQuant -= buyQuant;
+                        inventory[key].reduceQuant(buyQuant); // Reduce RAM stock instantly
                         totalAmount += amount;
 
-                        receipt << "\t" << itemName << " \t$" << itemRate << " \tx" << buyQuant << " \t$" << amount << endl;
-                        out << "\t" << itemName << " : " << itemRate << " : " << itemQuant << endl;
+                        // Add receipt line to memory vector
+                        cartReceipt.push_back("\t" + inventory[key].getItem() + " \t$" + to_string(inventory[key].getRate()) + " \tx" + to_string(buyQuant) + " \t$" + to_string(amount));
                     } else {
                         cout << "\t[ERROR] Insufficient stock! Transaction cancelled." << endl;
-                        out << line << endl; // Write original back to inventory
                     }
-                } else {
-                    out << line << endl;
                 }
-            }
-            
-            if (!found) {
+            } else {
                 cout << "\n\t[ERROR] '" << searchItem << "' Not Available in Inventory!" << endl;
             }
-            
-            in.close();
-            out.close();
-            receipt.close();
-            
-            remove("Inventory.txt");
-            rename("Inventory_Temp.txt", "Inventory.txt");
             
             Sleep(2500);
             system("cls");
@@ -199,13 +210,10 @@ void printBill() {
     cout << "\tITEM \t\tRATE \tQTY \tAMOUNT" << endl;
     cout << "\t-------------------------------------------" << endl;
 
-    ifstream readReceipt("Receipt.txt");
-    if (readReceipt.is_open()) {
-        string receiptLine;
-        while (getline(readReceipt, receiptLine)) {
-            cout << receiptLine << endl; 
+    if (!cartReceipt.empty()) {
+        for (const string& line : cartReceipt) {
+            cout << line << endl; 
         }
-        readReceipt.close();
     } else {
         cout << "\t(No items purchased)" << endl;
     }
@@ -215,7 +223,7 @@ void printBill() {
     cout << "\t===========================================" << endl;
     cout << "\t       Thanks For Shopping With Us!        " << endl << endl;
     
-    remove("Receipt.txt"); 
+    saveInventory(); // Sync final updated inventory to disk once checkout is done
     
     system("pause"); 
 }
@@ -223,10 +231,13 @@ void printBill() {
 int main() {
     bool exit = false;
     
+    // Load existing inventory into memory at launch
+    loadInventory();
+    
     while (!exit) {
         system("cls");
         cout << "\t======================================" << endl;
-        cout << "\t     SUPER MARKET BILLING SYSTEM" << endl;
+        cout << "\t       SUPER MARKET BILLING SYSTEM" << endl;
         cout << "\t======================================" << endl;
         cout << "\t\t1. Add Inventory Items" << endl;
         cout << "\t\t2. New Customer Checkout" << endl;
@@ -242,6 +253,7 @@ int main() {
         } else if (val == 3) {
             system("cls");
             exit = true;
+            saveInventory(); // Final safety save before shutting down
             cout << "\n\tShutting down system. Goodbye!\n" << endl;
             Sleep(2000);
         } else {
