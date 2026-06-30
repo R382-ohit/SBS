@@ -1,6 +1,7 @@
+	Socks : 40 : 5
+	tshirt : 450 : 35
+	shoes : 700 : 10
 	cake : 70 : 10
 	biscuit : 10 : 20
 	milk : 50 : 40
 	water : 15 : 35
-	shoes : 700 : 3
-	tshirt : 450 : 35
